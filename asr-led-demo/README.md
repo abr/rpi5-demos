@@ -1,8 +1,7 @@
 # Voice-controlled LEDs: ABR ASR → GPIO
 
-The mic is always listening — there's no start/stop button. Speech
-recognition runs continuously and entirely locally on ABR's library; there
-is no cloud step.
+The microphone is always listening, so there is no start or stop button.
+Speech recognition runs continuously on ABR's library, on the device.
 
     1. LISTEN     microphone, continuously                    (sounddevice)
     2. TRANSCRIBE speech → text, streaming                    (ABR niagara ASR)
@@ -13,12 +12,12 @@ lights off", and the LEDs react as you speak.
 
 ## Files
 
-| File | Purpose |
-| --- | --- |
-| `led_demo.py` | The listening loop + all the reusable pieces (continuous audio capture, streaming ASR, voice-command reactor, LED control). |
+`led_demo.py` holds everything: the listening loop plus the reusable pieces for
+continuous audio capture, streaming ASR, the voice-command reactor, and LED
+control.
 
-The ABR ASR library is **not part of this repo** — obtain it from ABR and
-unpack it here so the layout is:
+The ABR ASR library is not part of this repository. Get it from ABR and
+unpack it so the layout is:
 
     niagara-38m-live.en-<arch>/          ABR niagara ASR library + model blobs
 
@@ -33,40 +32,34 @@ Wire one LED per colour (with a current-limiting resistor, e.g. ~330 Ω) from
 a GPIO pin to ground. The default pin assignment (BCM numbering) is:
 
 | Colour | GPIO pin |
-| --- | --- |
-| red | 17 |
-| green | 27 |
-| blue | 22 |
+| ------ | -------- |
+| red    | 17       |
+| green  | 27       |
+| blue   | 22       |
 
 Edit `LED_PINS` at the top of `led_demo.py` to match your wiring, or to add
-more colours — each key becomes both the GPIO pin to drive and a word the
-voice reactor listens for.
+more colours. Each key is both the GPIO pin to drive and a word the voice
+reactor listens for.
 
 ## Setup
 
-1. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/)** (once, if you don't have it):
+Do the shared setup first: uv, the ABR application packages, and license
+activation are all in the [top-level README](../README.md). This demo needs two
+things on top of it.
 
-       curl -LsSf https://astral.sh/uv/install.sh | sh
+**`swig`**, so `uv` can compile `lgpio` from source. That is gpiozero's GPIO
+backend on a Pi 5, and it has no prebuilt wheel:
 
-   `led_demo.py` declares its Python dependencies inline (PEP 723); `uv` reads
-   them straight from the script and builds an ephemeral environment on first
-   run, so there's no separate install step.
+    sudo apt install -y swig
 
-2. **Install the system packages the dependencies need**:
+**The package path**, if you did not unpack into `~/abr-packages`. Edit
+`ABR_PACKAGES_ROOT` at the top of `led_demo.py`; `ASR_LIB` below it follows.
 
-       sudo apt update
-       sudo apt install -y libportaudio2 swig
+The first run is slow because `uv` builds the environment from the inline
+dependencies in the script. Later runs reuse it.
 
-   `libportaudio2` backs `sounddevice`; `swig` is needed for `uv` to
-   compile `lgpio`'s native extension from source (`lgpio` is gpiozero's
-   GPIO backend on a Pi 5).
-
-3. **Activate the ABR library** once (needs a license key + network; ASR
-   runs offline afterwards):
-
-       abr-sdk activate niagara-38m-live.en-linux-arm64/libniagara_38m_live.so   --key-file abr_license.key
-
-4. Update `ASR_LIB` in `led_demo.py` to the arm64 directory name.
+The [Raspberry Pi notes](../docs/raspberry-pi.md) cover audio and GPIO problems
+specific to a Pi 5.
 
 ## Run
 
@@ -76,29 +69,29 @@ voice reactor listens for.
 
 (or `uv run led_demo.py ...` if the file isn't executable on your system)
 
-The script starts listening immediately — no key press needed. Speak a
-command and the LEDs react as soon as each word is confirmed — usually the
-instant the next word starts, or after a brief pause for the last word of
-a command — the running transcript prints live to the terminal so you can
-see what the ASR is hearing as it happens. Say "reset" or "clear" to bail
-out of a command said by mistake without stopping the program. Press
-Ctrl+C (or say "quit" or "exit") to stop at any time.
+The script starts listening immediately, without waiting for a key press.
+Speak a command and the LEDs react as soon as each word is confirmed. That
+is usually the instant the next word starts, or after a brief pause for the
+last word of a command. The running transcript prints live to the terminal,
+so you can see what the ASR hears as it happens. Say "reset" or "clear" to
+bail out of a command you said by mistake without stopping the program.
+Press Ctrl+C, or say "quit" or "exit", to stop.
 
 ## Command grammar
 
 There are no discrete recordings in a continuous stream, so commands are
 recognized from a trailing window of the last few words as they arrive:
 
-| Action words | Effect |
-| --- | --- |
-| on, activate, enable | LED turns on steady |
-| off, deactivate, disable, stop | LED turns off |
+| Action words                     | Effect                     |
+| -------------------------------- | -------------------------- |
+| on, activate, enable             | LED turns on steady        |
+| off, deactivate, disable, stop   | LED turns off              |
 | blink, blinking, flash, flashing | LED blinks at a fixed rate |
 
 Say the colour name (or "all"/"everything"/"every"/"light"/"lights"/"leds"
-for every LED) *before* the action word, e.g. "red on" rather than "turn
+for every LED) _before_ the action word, e.g. "red on" rather than "turn
 on red". An action word heard with no colour or "all"-type word named yet
-doesn't fire — it keeps listening rather than guessing you meant every
-LED. (The exact word lists are the `ON_WORDS`/`OFF_WORDS`/`BLINK_WORDS`/
-`ALL_WORDS` sets near the top of `led_demo.py`, in case they've been
-tuned since this was written.)
+doesn't fire. It keeps listening rather than guessing you meant every LED.
+The exact word lists are the `ON_WORDS`, `OFF_WORDS`, `BLINK_WORDS`, and
+`ALL_WORDS` sets near the top of `led_demo.py`, in case they have been tuned
+since this was written.

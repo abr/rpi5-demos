@@ -9,7 +9,8 @@
 #     "numpy",
 # ]
 # ///
-"""Talk to Gemini with your voice — ABR ASR + ABR TTS, Gemini in the cloud.
+"""
+Talk to Gemini with your voice. ABR does ASR and TTS locally, Gemini replies.
 
 The pipeline has four steps, repeated in a loop:
 
@@ -36,20 +37,25 @@ stop. Type 'q' then Enter to quit.
 
 One-time setup:
 
-  * ABR libraries must be activated once (needs a license key and network
-    access; ASR/TTS afterwards run offline):
+  * The device must be activated once (needs a license key and network
+    access; ASR/TTS afterwards run offline). This covers every package on
+    the device, not just the one named here:
 
-        abr-sdk activate niagara-38m-live.en-linux-arm64/libniagara_38m_live.so   --key-file abr_license.key
-        abr-sdk activate nith-5m-live.en-f1-linux-arm64/libnith_5m_live.so   --key-file abr_license.key
-        abr-sdk activate nith-5m-live.en-m1-linux-arm64/libnith_5m_live.so   --key-file abr_license.key  # for --tts m1
+        cd ~/abr-packages/niagara-38m-live.en-linux-arm64
+        abr-sdk activate libniagara_38m_live.so --key-file abr_license.key
+
+  * Packages are read from ~/abr-packages; edit ABR_PACKAGES_ROOT below to
+    use another directory.
 
   * A Gemini API key must be on the environment or set in the code below:
 
         export GEMINI_API_KEY=...      # or GOOGLE_API_KEY
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import queue
 import re
@@ -57,31 +63,30 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterable, Iterator
 from math import gcd
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Optional
 
 import numpy as np
 import sounddevice as sd
-from scipy.signal import resample_poly
-
-from google import genai
-from google.genai import types
-
 from abr_sdk.asr import Asr, AsrChunk
 from abr_sdk.tts import Tts
+from google import genai
+from google.genai import types
+from scipy.signal import resample_poly
 
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-# Root folder for abr-packages (defaults to "~/abr-packages"), update as necessary.
+# Root folder holding the unpacked ABR application packages. Edit this if you
+# keep them somewhere else.
 ABR_PACKAGES_ROOT = Path.home() / "abr-packages"
-ASR_LIB = ABR_PACKAGES_ROOT / "niagara-38m-live.en-linux-arm64" / "libniagara_38m_live.so"
+ASR_LIB = ABR_PACKAGES_ROOT / "niagara-38m-live.en-linux-arm64/libniagara_38m_live.so"
 
 # The nith TTS ships one shared library per voice; pick with --tts.
 TTS_LIBS = {
-    "m1": ABR_PACKAGES_ROOT / "nith-5m-live.en-m1-linux-arm64" / "libnith_5m_live.so",  # male voice
-    "f1": ABR_PACKAGES_ROOT / "nith-5m-live.en-f1-linux-arm64" / "libnith_5m_live.so",  # female voice
+    "m1": ABR_PACKAGES_ROOT / "nith-5m-live.en-m1-linux-arm64/libnith_5m_live.so",
+    "f1": ABR_PACKAGES_ROOT / "nith-5m-live.en-f1-linux-arm64/libnith_5m_live.so",
 }
 DEFAULT_TTS = "f1"
 
@@ -107,25 +112,27 @@ SYSTEM_PROMPT = (
 # Gemini API key.
 GEMINI_API_KEY = ""
 
+
 # --------------------------------------------------------------------------- #
-# Step 1 — LISTEN: record the microphone into 16 kHz PCM
+# Step 1, LISTEN: record the microphone into 16 kHz PCM
 # --------------------------------------------------------------------------- #
 def _supported_capture_rate(input_device: int | None) -> int:
     """Return a sample rate the microphone accepts (prefer 16 kHz)."""
     for rate in (SAMPLE_RATE, 48_000, 44_100):
-        try:
-            sd.check_input_settings(device=input_device, samplerate=rate, channels=1, dtype="int16")
+        with contextlib.suppress(sd.PortAudioError):
+            sd.check_input_settings(
+                device=input_device, samplerate=rate, channels=1, dtype="int16"
+            )
             return rate
-        except Exception:
-            continue
     return int(sd.query_devices(input_device, "input")["default_samplerate"])
 
 
 # --------------------------------------------------------------------------- #
-# Step 2 — TRANSCRIBE: ABR niagara turns your speech into text, streaming
+# Step 2, TRANSCRIBE: ABR niagara turns your speech into text, streaming
 # --------------------------------------------------------------------------- #
 class StreamingTranscriber:
-    """Incremental ASR around a single niagara `Asr` instance.
+    """
+    Incremental ASR around a single niagara `Asr` instance.
 
     Push 16 kHz mono int16 PCM with :meth:`feed`; the transcript grows (and is
     revised in place, e.g. when punctuation/capitalisation is added) and the
@@ -134,13 +141,13 @@ class StreamingTranscriber:
     text.
     """
 
-    def __init__(self, on_text: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(self, on_text: Callable[[str], None] | None = None) -> None:
         if not ASR_LIB.exists():
             sys.exit(f"Missing SDK library: {ASR_LIB}")
         self.asr = Asr(str(ASR_LIB))
         self._on_text = on_text
-        self._buf = bytearray()   # raw assembled transcript bytes
-        self._last = ""           # last text handed to the callback
+        self._buf = bytearray()  # raw assembled transcript bytes
+        self._last = ""  # last text handed to the callback
 
     def _on_chunk(self, chunk: AsrChunk) -> None:
         # Each chunk may append to or rewrite the tail of the transcript.
@@ -164,11 +171,13 @@ class StreamingTranscriber:
         return self._buf.decode("utf-8", "replace").strip()
 
     def close(self) -> None:
+        """Release the ASR handle."""
         self.asr.close()
 
 
 def record_and_transcribe(transcriber: StreamingTranscriber, input_device=None) -> str:
-    """Record from the mic until Enter, streaming audio into `transcriber`.
+    """
+    Record from the mic until Enter, streaming audio into `transcriber`.
 
     Audio is resampled to 16 kHz and pushed to the ASR in ~0.2 s blocks as it
     arrives, so transcription happens *during* recording. Returns the final
@@ -180,7 +189,7 @@ def record_and_transcribe(transcriber: StreamingTranscriber, input_device=None) 
     # ~0.2 s blocks, length a multiple of `down` so each block resamples cleanly.
     block_frames = max(down, (int(0.2 * capture_rate) // down) * down)
 
-    buffers: "queue.Queue[np.ndarray]" = queue.Queue()
+    buffers: queue.Queue[np.ndarray] = queue.Queue()
     stop = threading.Event()
     pending = np.empty(0, dtype=np.int16)
 
@@ -214,14 +223,15 @@ def record_and_transcribe(transcriber: StreamingTranscriber, input_device=None) 
         callback=on_audio,
     ):
         threading.Thread(
-            target=lambda: (input("Recording... speak now, press Enter to stop. \n"), stop.set()),
+            target=lambda: (
+                input("Recording... speak now, press Enter to stop. \n"),
+                stop.set(),
+            ),
             daemon=True,
         ).start()
         while not stop.is_set():
-            try:
+            with contextlib.suppress(queue.Empty):
                 feed_samples(buffers.get(timeout=0.05).reshape(-1))
-            except queue.Empty:
-                continue
 
     # Drain anything the callback queued after the stop flag was set.
     while not buffers.empty():
@@ -231,10 +241,11 @@ def record_and_transcribe(transcriber: StreamingTranscriber, input_device=None) 
 
 
 # --------------------------------------------------------------------------- #
-# Step 3 — THINK: Gemini turns your words into a reply (cloud API)
+# Step 3, THINK: Gemini turns your words into a reply (cloud API)
 # --------------------------------------------------------------------------- #
 class GeminiChat:
-    """Wraps a Gemini chat session and remembers the conversation across turns.
+    """
+    Wraps a Gemini chat session and remembers the conversation across turns.
 
     History is kept server-side by the SDK's chat object; ``reply_stream`` yields
     the reply text token-by-token so the caller can start speaking it early.
@@ -242,11 +253,12 @@ class GeminiChat:
 
     def __init__(self, model: str = GEMINI_MODEL) -> None:
         if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-            if "GEMINI_API_KEY" == "":
-                sys.exit(("Set GEMINI_API_KEY (or GOOGLE_API_KEY) in the environment or "
-                          "in code above."))
-            else:
-                os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+            if len(GEMINI_API_KEY) == 0:
+                sys.exit(
+                    "Set GEMINI_API_KEY (or GOOGLE_API_KEY) in the environment or "
+                    "in code above."
+                )
+            os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 
         print(f"Connecting to Gemini ({model})...")
         # Client reads GEMINI_API_KEY / GOOGLE_API_KEY from the environment.
@@ -264,7 +276,7 @@ class GeminiChat:
 
 
 # --------------------------------------------------------------------------- #
-# Step 4 — SPEAK: synthesize the reply and play it out the speakers
+# Step 4, SPEAK: synthesize the reply and play it out the speakers
 # --------------------------------------------------------------------------- #
 # Sentence-ish boundaries: a run ending in . ? ! (optionally with closing quote)
 # followed by whitespace, or a newline. Used to chop the token stream into
@@ -273,7 +285,8 @@ _SENTENCE_END = re.compile(r'.*?[.!?]["\')\]]?(?:\s+|$)|.+?\n', re.DOTALL)
 
 
 def _sentences(pieces: Iterable[str]) -> Iterator[str]:
-    """Yield complete sentences from a stream of text fragments.
+    """
+    Yield complete sentences from a stream of text fragments.
 
     Buffers incoming fragments and emits each time one or more sentence
     boundaries are crossed; flushes any remainder when the stream ends.
@@ -286,7 +299,7 @@ def _sentences(pieces: Iterable[str]) -> Iterator[str]:
             if not m:
                 break
             sentence = m.group(0).strip()
-            buf = buf[m.end():]
+            buf = buf[m.end() :]
             if sentence:
                 yield sentence
     tail = buf.strip()
@@ -295,7 +308,8 @@ def _sentences(pieces: Iterable[str]) -> Iterator[str]:
 
 
 def speak_stream(tts: Tts, output_device: int, pieces: Iterable[str]) -> str:
-    """Speak a streamed reply sentence-by-sentence; return the full text.
+    """
+    Speak a streamed reply sentence-by-sentence; return the full text.
 
     Each completed sentence is pushed to the TTS as soon as it is available
     (the backend normalizes numbers, dates, and abbreviations internally),
@@ -315,7 +329,8 @@ def speak_stream(tts: Tts, output_device: int, pieces: Iterable[str]) -> str:
 
 
 class _StreamPlayer:
-    """Play 16 kHz mono int16 PCM as it arrives, via the system audio player.
+    """
+    Play 16 kHz mono int16 PCM as it arrives, via the system audio player.
 
     We pipe to the system player (aplay) rather than use sounddevice for output:
     that follows the output device set in the OS sound settings and lets the
@@ -330,29 +345,44 @@ class _StreamPlayer:
             output_device = f"plughw:{output_device},0"
 
         if shutil.which("aplay"):
-            cmd = ["aplay", "-q", "-D", output_device, "-f", "S16_LE", "-c", "1", "-r", str(SAMPLE_RATE), "-"]
+            cmd = [
+                "aplay",
+                "-q",
+                "-D",
+                output_device,
+                "-f",
+                "S16_LE",
+                "-c",
+                "1",
+                "-r",
+                str(SAMPLE_RATE),
+                "-",
+            ]
         else:
-            print("  (no audio player found; install pipewire or alsa-utils)", file=sys.stderr)
+            print(
+                "  (no audio player found; install pipewire or alsa-utils)",
+                file=sys.stderr,
+            )
             self.proc = None
             return
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         # Pad the start with silence so the stream's startup clipping is harmless.
         self.write(bytes(int(SAMPLE_RATE * LEAD_IN_SILENCE_S) * 2))
 
     def write(self, pcm: bytes) -> None:
-        if self.proc is not None and pcm:
-            try:
+        if self.proc is not None and len(pcm) > 0:
+            with contextlib.suppress(BrokenPipeError):
                 self.proc.stdin.write(pcm)
-            except BrokenPipeError:
-                pass
 
     def close(self) -> None:
         if self.proc is not None:
-            try:
+            with contextlib.suppress(BrokenPipeError):
                 self.proc.stdin.close()
-            except BrokenPipeError:
-                pass
             self.proc.wait()
             self.proc = None
 
@@ -360,10 +390,14 @@ class _StreamPlayer:
 # --------------------------------------------------------------------------- #
 # The conversation loop
 # --------------------------------------------------------------------------- #
-def chat_loop(gemini: GeminiChat, input_device: int | None = None,
-              output_device: int | None = None,
-              tts_lib: Path = TTS_LIBS[DEFAULT_TTS]) -> None:
-    """Record -> stream-transcribe -> Gemini -> speak, until the user quits.
+def chat_loop(
+    gemini: GeminiChat,
+    input_device: int | None = None,
+    output_device: int | None = None,
+    tts_lib: Path = TTS_LIBS[DEFAULT_TTS],
+) -> None:
+    """
+    Record -> stream-transcribe -> Gemini -> speak, until the user quits.
 
     Press Enter to start recording, Enter again to stop; 'q' then Enter quits.
     """
@@ -382,7 +416,9 @@ def chat_loop(gemini: GeminiChat, input_device: int | None = None,
 
             transcriber = StreamingTranscriber(on_text=on_text)
             try:
-                user_text = record_and_transcribe(transcriber, input_device)  # 1+2 LISTEN+TRANSCRIBE
+                user_text = record_and_transcribe(
+                    transcriber, input_device
+                )  # 1+2 LISTEN+TRANSCRIBE
             finally:
                 transcriber.close()
 
@@ -392,7 +428,10 @@ def chat_loop(gemini: GeminiChat, input_device: int | None = None,
                 continue
 
             print("  Gemini: ", end="", flush=True)
-            spoken = speak_stream(tts, output_device, _echo(gemini.reply_stream(user_text)))  # 3+4 THINK+SPEAK
+            # 3+4 THINK+SPEAK
+            spoken = speak_stream(
+                tts, output_device, _echo(gemini.reply_stream(user_text))
+            )
             print(f"\r  Gemini: {spoken}\n")
     print("Bye.")
 
@@ -405,22 +444,43 @@ def _echo(pieces: Iterable[str]) -> Iterator[str]:
 
 
 def main() -> None:
+    """Parse arguments and run the conversation loop."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--input-device", type=int, default=None, help="microphone device index")
-    parser.add_argument("--output-device", type=int, default=None, help="aplay plughw output device index")
-    parser.add_argument("--list-devices", action="store_true", help="list audio devices and exit")
-    parser.add_argument("--model", default=GEMINI_MODEL, help=f"Gemini model (default {GEMINI_MODEL})")
-    parser.add_argument("--tts", choices=sorted(TTS_LIBS), default=DEFAULT_TTS,
-                        help=f"TTS voice (default {DEFAULT_TTS}): f1=female, m1=male")
+    parser.add_argument(
+        "--input-device", type=int, default=None, help="microphone device index"
+    )
+    parser.add_argument(
+        "--output-device",
+        type=int,
+        default=None,
+        help="aplay plughw output device index",
+    )
+    parser.add_argument(
+        "--list-devices", action="store_true", help="list audio devices and exit"
+    )
+    parser.add_argument(
+        "--model", default=GEMINI_MODEL, help=f"Gemini model (default {GEMINI_MODEL})"
+    )
+    parser.add_argument(
+        "--tts",
+        choices=sorted(TTS_LIBS),
+        default=DEFAULT_TTS,
+        help=f"TTS voice (default {DEFAULT_TTS}): f1=female, m1=male",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
         print(sd.query_devices())
         return
 
-    chat_loop(GeminiChat(args.model), args.input_device, args.output_device, TTS_LIBS[args.tts])
+    chat_loop(
+        GeminiChat(args.model),
+        args.input_device,
+        args.output_device,
+        TTS_LIBS[args.tts],
+    )
 
 
 if __name__ == "__main__":

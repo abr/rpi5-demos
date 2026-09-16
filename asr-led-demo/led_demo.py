@@ -10,7 +10,8 @@
 #     "lgpio",
 # ]
 # ///
-"""Control GPIO LEDs with your voice — ABR ASR, no cloud involved.
+"""
+Control GPIO LEDs with your voice, using ABR ASR on the device.
 
 The mic is always listening; there is no start/stop step. Audio is streamed
 into the ASR continuously and transcribed as it arrives, and each LED
@@ -40,17 +41,24 @@ Say "reset" or "clear" to bail out of a command said by mistake.
 
 One-time setup:
 
-  * ABR library must be activated once (needs a license key and network
-    access; ASR afterwards runs offline):
+  * The device must be activated once (needs a license key and network
+    access; ASR afterwards runs offline). This covers every package on the
+    device, not just the one named here:
 
-        abr-sdk activate niagara-38m-live.en-linux-arm64/libniagara_38m_live.so   --key-file abr_license.key
+        cd ~/abr-packages/niagara-38m-live.en-linux-arm64
+        abr-sdk activate libniagara_38m_live.so --key-file abr_license.key
+
+  * Packages are read from ~/abr-packages; edit ABR_PACKAGES_ROOT below to
+    use another directory.
 
   * Wire an LED (with a current-limiting resistor) from each pin in LED_PINS
     below to ground, and update the pin numbers to match your wiring.
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import queue
 import re
 import sys
@@ -61,17 +69,17 @@ from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
+from abr_sdk.asr import Asr, AsrChunk
 from gpiozero import LED
 from scipy.signal import resample_poly
-
-from abr_sdk.asr import Asr, AsrChunk
 
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-# Root folder for abr-packages (defaults to "~/abr-packages"), update as necessary.
+# Root folder holding the unpacked ABR application packages. Edit this if you
+# keep them somewhere else.
 ABR_PACKAGES_ROOT = Path.home() / "abr-packages"
-ASR_LIB = ABR_PACKAGES_ROOT / "niagara-38m-live.en-linux-arm64" / "libniagara_38m_live.so"
+ASR_LIB = ABR_PACKAGES_ROOT / "niagara-38m-live.en-linux-arm64/libniagara_38m_live.so"
 
 # BCM GPIO pin for each LED. Update these to match your wiring. Each key
 # doubles as the word the voice reactor listens for.
@@ -104,10 +112,17 @@ RECENT_WINDOW = 8
 # following it (see VoiceCommandReactor).
 SEAL_TIMEOUT_S = 0.2
 
+# The mic never stops, so the running transcript is trimmed to this many bytes.
+# Every chunk rescans whatever is retained to consult the last RECENT_WINDOW
+# words, so this is kept small: still far more than any revision an ASR chunk
+# reaches back over, but a fraction of a session's worth of speech.
+MAX_TRANSCRIPT_BYTES = 1024
+
 ALL_WORDS = {"all", "everything", "every", "light", "lights", "leds"}
 ON_WORDS = {"on", "activate", "enable"}
 OFF_WORDS = {"off", "deactivate", "disable", "stop"}
 BLINK_WORDS = {"blink", "blinking", "flash", "flashing"}
+
 
 # --------------------------------------------------------------------------- #
 # LEDs
@@ -119,6 +134,7 @@ class LedBoard:
         self.leds = {name: LED(pin) for name, pin in pins.items()}
 
     def apply(self, colours: list[str], action: str) -> None:
+        """Drive each named LED according to *action*."""
         for name in colours:
             led = self.leds[name]
             if action == "on":
@@ -129,6 +145,7 @@ class LedBoard:
                 led.blink(on_time=BLINK_PERIOD_S, off_time=BLINK_PERIOD_S)
 
     def close(self) -> None:
+        """Release every GPIO pin."""
         for led in self.leds.values():
             led.close()
 
@@ -137,7 +154,8 @@ class LedBoard:
 # ASR -> LEDs: react to colour+action words as the transcript streams in
 # --------------------------------------------------------------------------- #
 class VoiceCommandReactor:
-    """Watches a live-growing ASR transcript and drives LEDs on voice commands.
+    """
+    Watches a live-growing ASR transcript and drives LEDs on voice commands.
 
     Feed ABR `AsrChunk`s to :meth:`on_chunk` (e.g. as the `on_chunk` callback
     of `Asr.push`). There are no utterance boundaries in a continuous stream,
@@ -170,20 +188,35 @@ class VoiceCommandReactor:
     def __init__(self, leds: LedBoard) -> None:
         self.leds = leds
         self._buf = bytearray()
-        self._seen_word_count = 0        # sealed words already committed
-        self._pending_word: str | None = None   # trailing, not-yet-sealed word
+        self._seen_word_count = 0  # sealed words already committed
+        self._pending_word: str | None = None  # trailing, not-yet-sealed word
         self._pending_since: float | None = None
         self._recent: deque[str] = deque(maxlen=RECENT_WINDOW)
         self.stop_requested = False
 
     def on_chunk(self, chunk: AsrChunk) -> None:
+        """Fold one ASR chunk into the transcript and react to any command."""
         chunk.update(self._buf)
+        self._trim()
         text = self._buf.decode("utf-8", "replace").lower()
         print(f"\r  heard: {text.strip()[-60:]}", end="", flush=True)
         self._resync(text, time.monotonic())
 
+    def _trim(self) -> None:
+        """Drop the oldest whole words once the transcript grows past the cap."""
+        if len(self._buf) <= MAX_TRANSCRIPT_BYTES:
+            return
+        cut = self._buf.find(b" ", len(self._buf) - MAX_TRANSCRIPT_BYTES)
+        if cut == -1:
+            return
+        dropped = self._buf[:cut].decode("utf-8", "replace").lower()
+        self._seen_word_count -= len(re.findall(r"[a-z']+", dropped))
+        self._seen_word_count = max(self._seen_word_count, 0)
+        del self._buf[:cut]
+
     def seal_idle(self) -> None:
-        """Force-commit the trailing word once it's gone quiet for a bit.
+        """
+        Force-commit the trailing word once it's gone quiet for a bit.
 
         Call this regularly (e.g. once per audio-capture loop iteration) so
         a command's last word -- including "quit"/"exit" -- fires even when
@@ -207,7 +240,7 @@ class VoiceCommandReactor:
             tail = matches[-1].group(0)
 
         sealed_words = [m.group(0) for m in matches[:sealed_count]]
-        for word in sealed_words[self._seen_word_count:]:
+        for word in sealed_words[self._seen_word_count :]:
             self._commit(word)
         self._seen_word_count = len(sealed_words)
 
@@ -242,7 +275,8 @@ class VoiceCommandReactor:
         colours = [name for name in LED_PINS if name in window]
         if not colours:
             if not (window & ALL_WORDS):
-                return  # heard the action before naming a colour/"all" -- say the colour first, e.g. "red on"
+                # Heard the action before any colour or "all", so keep listening.
+                return
             colours = list(LED_PINS)
 
         self.leds.apply(colours, action)
@@ -256,11 +290,11 @@ class VoiceCommandReactor:
 def _supported_capture_rate(input_device: int | None) -> int:
     """Return a sample rate the microphone accepts (prefer 16 kHz)."""
     for rate in (SAMPLE_RATE, 48_000, 44_100):
-        try:
-            sd.check_input_settings(device=input_device, samplerate=rate, channels=1, dtype="int16")
+        with contextlib.suppress(sd.PortAudioError):
+            sd.check_input_settings(
+                device=input_device, samplerate=rate, channels=1, dtype="int16"
+            )
             return rate
-        except Exception:
-            continue
     return int(sd.query_devices(input_device, "input")["default_samplerate"])
 
 
@@ -273,7 +307,7 @@ def listen_forever(asr: Asr, leds: LedBoard, input_device: int | None = None) ->
     block_frames = max(down, (int(0.2 * capture_rate) // down) * down)
 
     reactor = VoiceCommandReactor(leds)
-    audio_queue: "queue.Queue[np.ndarray]" = queue.Queue()
+    audio_queue: queue.Queue[np.ndarray] = queue.Queue()
     pending = np.empty(0, dtype=np.int16)
 
     def on_audio(indata, _frames, _time, status):
@@ -291,8 +325,10 @@ def listen_forever(asr: Asr, leds: LedBoard, input_device: int | None = None) ->
                 block = np.clip(np.round(resampled), -32768, 32767).astype(np.int16)
             asr.push(block.astype("<i2").tobytes(), on_chunk=reactor.on_chunk)
 
-    print(f"\nListening for voice commands over {', '.join(LED_PINS)}... "
-          f"(say {' or '.join(sorted(QUIT_WORDS))}, or Ctrl+C, to quit)\n")
+    print(
+        f"\nListening for voice commands over {', '.join(LED_PINS)}... "
+        f"(say {' or '.join(sorted(QUIT_WORDS))}, or Ctrl+C, to quit)\n"
+    )
     with sd.InputStream(
         samplerate=capture_rate,
         channels=1,
@@ -302,10 +338,8 @@ def listen_forever(asr: Asr, leds: LedBoard, input_device: int | None = None) ->
     ):
         try:
             while not reactor.stop_requested:
-                try:
+                with contextlib.suppress(queue.Empty):
                     feed_samples(audio_queue.get(timeout=0.1).reshape(-1))
-                except queue.Empty:
-                    pass
                 reactor.seal_idle()
         except KeyboardInterrupt:
             print("\nStopping...")
@@ -313,11 +347,16 @@ def listen_forever(asr: Asr, leds: LedBoard, input_device: int | None = None) ->
 
 
 def main() -> None:
+    """Parse arguments and run the listening loop."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--input-device", type=int, default=None, help="microphone device index")
-    parser.add_argument("--list-devices", action="store_true", help="list audio devices and exit")
+    parser.add_argument(
+        "--input-device", type=int, default=None, help="microphone device index"
+    )
+    parser.add_argument(
+        "--list-devices", action="store_true", help="list audio devices and exit"
+    )
     args = parser.parse_args()
 
     if args.list_devices:
