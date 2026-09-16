@@ -1,0 +1,7 @@
+# Python deps for the ABR ASR -> GPIO LED voice-command demo.
+abr-sdk
+sounddevice
+scipy
+numpy
+gpiozero
+lgpio
