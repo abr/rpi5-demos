@@ -1,4 +1,14 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S env -u UV_NO_SYNC uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "abr-sdk",
+#     "google-genai",
+#     "sounddevice",
+#     "scipy",
+#     "numpy",
+# ]
+# ///
 """Talk to Gemini with your voice — ABR ASR + ABR TTS, Gemini in the cloud.
 
 The pipeline has four steps, repeated in a loop:
@@ -15,11 +25,11 @@ fed to the TTS one sentence at a time, so audio starts before the full reply has
 arrived.
 
 Usage:
-    python voice_chat.py                 # start chatting
-    python voice_chat.py --list-devices  # print audio devices, then exit
-    python voice_chat.py --input-device 7  # use a specific microphone
-    python voice_chat.py --model gemini-3.6-flash-lite
-    python voice_chat.py --tts m1        # male voice (default: f1, female)
+    ./llm_demo.py                 # start chatting
+    ./llm_demo.py --list-devices  # print audio devices, then exit
+    ./llm_demo.py --input-device 7  # use a specific microphone
+    ./llm_demo.py --model gemini-3.6-flash-lite
+    ./llm_demo.py --tts m1        # male voice (default: f1, female)
 
 At the prompt: press Enter to start recording, speak, press Enter again to
 stop. Type 'q' then Enter to quit.

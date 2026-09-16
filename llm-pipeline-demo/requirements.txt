@@ -1,6 +1,0 @@
-# Python deps for the ABR ASR -> Gemini -> ABR TTS voice pipeline.
-abr-sdk
-google-genai
-sounddevice
-scipy
-numpy

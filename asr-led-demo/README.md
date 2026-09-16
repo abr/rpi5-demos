@@ -4,9 +4,9 @@ The mic is always listening — there's no start/stop button. Speech
 recognition runs continuously and entirely locally on ABR's library; there
 is no cloud step.
 
-    1. LISTEN     microphone, continuously                  (sounddevice)
+    1. LISTEN     microphone, continuously                    (sounddevice)
     2. TRANSCRIBE speech → text, streaming                    (ABR niagara ASR)
-    3. ACT        colour + action words heard → drive an LED   (gpiozero)
+    3. ACT        colour + action words heard → drive an LED  (gpiozero)
 
 Say the colour before the action, e.g. "red on", "blue blink", or "all
 lights off", and the LEDs react as you speak.
@@ -44,18 +44,22 @@ voice reactor listens for.
 
 ## Setup
 
-1. **Install system packages**:
+1. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/)** (once, if you don't have it):
+
+       curl -LsSf https://astral.sh/uv/install.sh | sh
+
+   `led_demo.py` declares its Python dependencies inline (PEP 723); `uv` reads
+   them straight from the script and builds an ephemeral environment on first
+   run, so there's no separate install step.
+
+2. **Install the system packages the dependencies need**:
 
        sudo apt update
        sudo apt install -y libportaudio2 swig
 
-   `libportaudio2` backs `sounddevice`; `swig` is needed to compile
-   `lgpio`'s native extension when `pip install` builds it from source
-   below (`lgpio` is gpiozero's GPIO backend on a Pi 5).
-
-2. **Python deps**
-
-       pip install -r requirements.txt
+   `libportaudio2` backs `sounddevice`; `swig` is needed for `uv` to
+   compile `lgpio`'s native extension from source (`lgpio` is gpiozero's
+   GPIO backend on a Pi 5).
 
 3. **Activate the ABR library** once (needs a license key + network; ASR
    runs offline afterwards):
@@ -66,9 +70,11 @@ voice reactor listens for.
 
 ## Run
 
-    python led_demo.py                    # start listening, Ctrl+C to quit
-    python led_demo.py --list-devices     # list audio devices
-    python led_demo.py --input-device 7   # pick a microphone
+    ./led_demo.py                    # start listening, Ctrl+C to quit
+    ./led_demo.py --list-devices     # list audio devices
+    ./led_demo.py --input-device 7   # pick a microphone
+
+(or `uv run led_demo.py ...` if the file isn't executable on your system)
 
 The script starts listening immediately — no key press needed. Speak a
 command and the LEDs react as soon as each word is confirmed — usually the

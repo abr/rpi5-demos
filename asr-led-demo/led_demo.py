@@ -1,4 +1,15 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S env -u UV_NO_SYNC uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "abr-sdk",
+#     "sounddevice",
+#     "scipy",
+#     "numpy",
+#     "gpiozero",
+#     "lgpio",
+# ]
+# ///
 """Control GPIO LEDs with your voice — ABR ASR, no cloud involved.
 
 The mic is always listening; there is no start/stop step. Audio is streamed
@@ -16,10 +27,13 @@ Say the colour before the action, e.g.:
     "blue blink"
     "all lights off"
 
-Usage:
-    python led_demo.py                    # start listening, Ctrl+C to quit
-    python led_demo.py --list-devices     # print audio devices, then exit
-    python led_demo.py --input-device 7   # use a specific microphone
+Usage (uv resolves and caches the dependencies above automatically):
+    uv run led_demo.py                    # start listening, Ctrl+C to quit
+    uv run led_demo.py --list-devices     # print audio devices, then exit
+    uv run led_demo.py --input-device 7   # use a specific microphone
+
+or, since the shebang invokes `uv run --script`, directly:
+    ./led_demo.py
 
 Say "quit" or "exit" at any time to stop the program, same as Ctrl+C.
 Say "reset" or "clear" to bail out of a command said by mistake.

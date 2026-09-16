@@ -31,9 +31,13 @@ point it at other paths by editing `ASR_LIB` / `TTS_LIBS` at the top of the file
 
 ## Setup
 
-1. **Python deps**
+1. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/)** (once, if you don't have it):
 
-       pip install -r requirements.txt
+       curl -LsSf https://astral.sh/uv/install.sh | sh
+
+   `llm_demo.py` declares its Python dependencies inline (PEP 723); `uv` reads
+   them straight from the script and builds an ephemeral environment on first
+   run, so there's no separate install step.
 
 2. **Install the audio system packages**: 
 
@@ -71,11 +75,13 @@ point it at other paths by editing `ASR_LIB` / `TTS_LIBS` at the top of the file
 
 ## Run
 
-    python llm_demo.py                       # start chatting
-    python llm_demo.py --list-devices        # list audio devices
-    python llm_demo.py --input-device 7      # pick a microphone
-    python llm_demo.py --output-device 3     # pick a plughw speaker
-    python llm_demo.py --model gemini-3.6-flash-lite
-    python llm_demo.py --tts m1              # male voice (default: f1, female)
+    ./llm_demo.py                       # start chatting
+    ./llm_demo.py --list-devices        # list audio devices
+    ./llm_demo.py --input-device 7      # pick a microphone
+    ./llm_demo.py --output-device 3     # pick a plughw speaker
+    ./llm_demo.py --model gemini-3.6-flash-lite
+    ./llm_demo.py --tts m1              # male voice (default: f1, female)
+
+(or `uv run llm_demo.py ...` if the file isn't executable on your system)
 
 Press Enter to start recording, speak, Enter again to stop; `q` then Enter quits.
