@@ -20,7 +20,7 @@ The pipeline has four steps, repeated in a loop:
     4. SPEAK      reply   -> audio out the speakers    (ABR nith TTS, streamed)
 
 ASR and TTS run locally on the ABR libraries; only the THINK step calls out to
-the cloud. The transcript is streamed into the ASR *while you are still talking*
+the cloud. Your speech is streamed into the ASR *while you are still talking*
 (low post-stop latency), and Gemini's reply is streamed back token-by-token and
 fed to the TTS one sentence at a time, so audio starts before the full reply has
 arrived.
@@ -101,6 +101,10 @@ SAMPLE_RATE = 16_000
 # The audio output drops the first few milliseconds while the stream starts up.
 # Prepend this much silence so the clipped part is silence, not the first word.
 LEAD_IN_SILENCE_S = 0.3
+
+# The live transcript repaints one terminal line, so cap it to a trailing
+# window narrow enough not to wrap (label included) on an 80-column terminal.
+LIVE_TEXT_WIDTH = 70
 
 # Keep Gemini's replies short and plain, since they are read aloud.
 SYSTEM_PROMPT = (
@@ -406,13 +410,14 @@ def chat_loop(
 
     print(f"Loading nith TTS ({tts_lib.parent.name})...")
     with Tts(str(tts_lib)) as tts:
-        print("\nReady. Press Enter to record, or type 'q' then Enter to quit.\n")
+        print("\nReady. Press Enter once to record, or type 'q' then Enter to quit.\n")
         while True:
-            if input("[Enter]=record  q=quit > ").strip().lower() == "q":
+            if input("[Enter]=start recording  q=quit > ").strip().lower() == "q":
                 break
 
             def on_text(text: str) -> None:
-                print(f"\r  You:   {text}", end="", flush=True)
+                window = text[-LIVE_TEXT_WIDTH:]
+                print(f"\r  You:   {window}", end="", flush=True)
 
             transcriber = StreamingTranscriber(on_text=on_text)
             try:
@@ -427,6 +432,7 @@ def chat_loop(
                 print("  (didn't catch that)\n")
                 continue
 
+            print(f"  Text Prompt: {user_text}\n")
             print("  Gemini: ", end="", flush=True)
             # 3+4 THINK+SPEAK
             spoken = speak_stream(

@@ -8,7 +8,7 @@ device using ABR's libraries. Gemini generates the reply in the cloud.
     3. THINK      text → reply               (Gemini, cloud API)
     4. SPEAK      reply → speakers           (ABR nith TTS, streamed)
 
-The transcript is streamed into the ASR while you talk, and Gemini's reply is
+Your speech is streamed into the ASR while you talk, and Gemini's reply is
 streamed back and synthesized one sentence at a time, so audio starts before the
 full reply has arrived.
 
@@ -27,15 +27,16 @@ and unpack them so the layout is:
 
 Use the build matching your CPU (`linux-arm64` on a Raspberry Pi 5).
 `llm_demo.py` expects the `linux-arm64` directory names, read from
-`~/abr-packages`. Point it elsewhere by editing `ASR_LIB` and `TTS_LIBS` at the
-top of the file.
+`~/abr-packages`. Point it elsewhere by editing `ABR_PACKAGES_ROOT` at the top
+of the file; `ASR_LIB` and `TTS_LIBS` are derived from it.
 
 ## Setup
 
-Do the shared setup first: uv, the ABR application packages, and license
-activation are all in the [top-level README](../README.md). Activation covers
-the whole device, so the TTS packages need nothing beyond unpacking them. This
-demo needs two things on top of that.
+Do the shared setup first: uv, the system libraries, the ABR application
+packages, and license activation are all in the
+[top-level README](../README.md). Activation covers the whole device, so the TTS
+packages need nothing beyond unpacking them. This demo needs two things on top
+of that.
 
 **The package path**, if you did not unpack into `~/abr-packages`. Edit
 `ABR_PACKAGES_ROOT` at the top of `llm_demo.py`; `ASR_LIB` and `TTS_LIBS` below
