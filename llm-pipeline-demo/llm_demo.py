@@ -169,6 +169,10 @@ class StreamingTranscriber:
             # internal processor); passing it every time is harmless.
             self.asr.push(pcm16, on_chunk=self._on_chunk)
 
+    def mute(self) -> None:
+        """Stop firing ``on_text``; the transcript itself keeps updating."""
+        self._on_text = None
+
     def finish(self) -> str:
         """Flush remaining audio and return the final transcript text."""
         self.asr.wait_for_completion()
@@ -236,6 +240,11 @@ def record_and_transcribe(transcriber: StreamingTranscriber, input_device=None) 
         while not stop.is_set():
             with contextlib.suppress(queue.Empty):
                 feed_samples(buffers.get(timeout=0.05).reshape(-1))
+
+    # Enter's echoed newline has already moved the cursor to a fresh row, so
+    # any further repaint would leave a duplicate live line behind. The caller
+    # prints the final text.
+    transcriber.mute()
 
     # Drain anything the callback queued after the stop flag was set.
     while not buffers.empty():
