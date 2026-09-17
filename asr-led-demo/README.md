@@ -23,8 +23,7 @@ unpack it so the layout is:
 
 Use the build matching your CPU (`linux-arm64` on a Raspberry Pi 5).
 `led_demo.py` expects the `linux-arm64` directory name and the default
-location is `~/abr-packages`; point it at another path by editing `ASR_LIB`
-at the top of the file.
+location is `~/abr-packages`.
 
 ## Hardware
 
@@ -44,13 +43,12 @@ reactor listens for.
 ## Setup
 
 Do the shared setup first: uv, the ABR application packages, and license
-activation are all in the [top-level README](../README.md). This demo needs two
-things on top of it.
+activation are all in the [top-level README](../README.md). Two things to check
+on top of it.
 
-**`swig`**, so `uv` can compile `lgpio` from source. That is gpiozero's GPIO
-backend on a Pi 5, and it has no prebuilt wheel:
-
-    sudo apt install -y swig
+**`swig`** must be installed so `uv` can compile `lgpio` from source. That is
+gpiozero's GPIO backend on a Pi 5, and it has no prebuilt wheel. The shared
+setup installs it; if you skipped that step, do it before the first run.
 
 **The package path**, if you did not unpack into `~/abr-packages`. Edit
 `ABR_PACKAGES_ROOT` at the top of `led_demo.py`; `ASR_LIB` below it follows.

@@ -118,6 +118,10 @@ SEAL_TIMEOUT_S = 0.2
 # reaches back over, but a fraction of a session's worth of speech.
 MAX_TRANSCRIPT_BYTES = 1024
 
+# The live transcript repaints one terminal line, so cap it to a trailing
+# window narrow enough not to wrap (label included) on an 80-column terminal.
+LIVE_TEXT_WIDTH = 70
+
 ALL_WORDS = {"all", "everything", "every", "light", "lights", "leds"}
 ON_WORDS = {"on", "activate", "enable"}
 OFF_WORDS = {"off", "deactivate", "disable", "stop"}
@@ -183,6 +187,11 @@ class VoiceCommandReactor:
     because the trailing word of an utterance -- including a lone "quit"
     or "exit" -- would otherwise never be confirmed if nothing is said
     afterward.
+
+    The live `heard: ...` line shows only what was said after the last
+    command or reset word. `_display_from` marks where it starts, set to
+    the end of the word that consumed the command, and `_trim` shifts it
+    down as the transcript is trimmed from the front.
     """
 
     def __init__(self, leds: LedBoard) -> None:
@@ -192,6 +201,8 @@ class VoiceCommandReactor:
         self._pending_word: str | None = None  # trailing, not-yet-sealed word
         self._pending_since: float | None = None
         self._recent: deque[str] = deque(maxlen=RECENT_WINDOW)
+        # char offset in the transcript the live display starts from
+        self._display_from = 0
         self.stop_requested = False
 
     def on_chunk(self, chunk: AsrChunk) -> None:
@@ -199,8 +210,12 @@ class VoiceCommandReactor:
         chunk.update(self._buf)
         self._trim()
         text = self._buf.decode("utf-8", "replace").lower()
-        print(f"\r  heard: {text.strip()[-60:]}", end="", flush=True)
         self._resync(text, time.monotonic())
+        print(
+            f"\r  heard: {text[self._display_from :].strip()[-LIVE_TEXT_WIDTH:]}",
+            end="",
+            flush=True
+        )
 
     def _trim(self) -> None:
         """Drop the oldest whole words once the transcript grows past the cap."""
@@ -212,6 +227,8 @@ class VoiceCommandReactor:
         dropped = self._buf[:cut].decode("utf-8", "replace").lower()
         self._seen_word_count -= len(re.findall(r"[a-z']+", dropped))
         self._seen_word_count = max(self._seen_word_count, 0)
+        # dropping from the front shifts every offset into the transcript
+        self._display_from = max(self._display_from - len(dropped), 0)
         del self._buf[:cut]
 
     def seal_idle(self) -> None:
@@ -227,7 +244,8 @@ class VoiceCommandReactor:
         if time.monotonic() - self._pending_since >= SEAL_TIMEOUT_S:
             word, self._pending_word = self._pending_word, None
             self._seen_word_count += 1
-            self._commit(word)
+            # the pending word is the trailing one, so it ends at the transcript's end
+            self._commit(word, len(self._buf.decode("utf-8", "replace")))
 
     def _resync(self, text: str, now: float) -> None:
         matches = list(re.finditer(r"[a-z']+", text))
@@ -239,16 +257,15 @@ class VoiceCommandReactor:
             sealed_count -= 1
             tail = matches[-1].group(0)
 
-        sealed_words = [m.group(0) for m in matches[:sealed_count]]
-        for word in sealed_words[self._seen_word_count :]:
-            self._commit(word)
-        self._seen_word_count = len(sealed_words)
+        for m in matches[self._seen_word_count : sealed_count]:
+            self._commit(m.group(0), m.end())
+        self._seen_word_count = sealed_count
 
         if tail != self._pending_word:
             self._pending_word = tail
             self._pending_since = now if tail is not None else None
 
-    def _commit(self, word: str) -> None:
+    def _commit(self, word: str, word_end: int) -> None:
         self._recent.append(word)
         if word in QUIT_WORDS:
             self.stop_requested = True
@@ -256,11 +273,12 @@ class VoiceCommandReactor:
             return
         if word in RESET_WORDS:
             self._recent.clear()
+            self._display_from = word_end
             print(f"\n  -> cleared recent word list (heard {word!r})")
             return
-        self._maybe_trigger()
+        self._maybe_trigger(word_end)
 
-    def _maybe_trigger(self) -> None:
+    def _maybe_trigger(self, word_end: int) -> None:
         window = set(self._recent)
 
         if window & OFF_WORDS:
@@ -282,6 +300,7 @@ class VoiceCommandReactor:
         self.leds.apply(colours, action)
         print(f"\n  -> {action}: {', '.join(colours)}")
         self._recent.clear()
+        self._display_from = word_end
 
 
 # --------------------------------------------------------------------------- #
@@ -367,13 +386,12 @@ def main() -> None:
         sys.exit(f"Missing SDK library: {ASR_LIB}")
 
     print("Loading niagara ASR...")
-    asr = Asr(str(ASR_LIB), enable_punctuation=False)
-    leds = LedBoard(LED_PINS)
-    try:
-        listen_forever(asr, leds, args.input_device)
-    finally:
-        leds.close()
-        asr.close()
+    with Asr(str(ASR_LIB), enable_punctuation=False) as asr:
+        leds = LedBoard(LED_PINS)
+        try:
+            listen_forever(asr, leds, args.input_device)
+        finally:
+            leds.close()
 
 
 if __name__ == "__main__":
